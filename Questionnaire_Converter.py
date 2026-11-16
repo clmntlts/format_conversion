@@ -284,6 +284,17 @@ class ConverterApp(ttk.Frame):
     def _apply_renames(self, wide):
         return wide.rename(columns={v: self.rename_map.get(v, v) for v in wide.columns})
 
+    def _name_clashes(self):
+        """Export names used by more than one column (incl. the meta columns)."""
+        names = ["submission_id", *cc.META_COLS]
+        names += [self.rename_map.get(v, v) for v in self.codebook["variable"]]
+        seen, clashes = set(), set()
+        for n in names:
+            if n in seen:
+                clashes.add(n)
+            seen.add(n)
+        return sorted(clashes)
+
     def _renamed_codebook(self, cb):
         cb = cb.copy()
         cb.insert(1, "export_name", cb["variable"].map(lambda v: self.rename_map.get(v, v)))
@@ -327,6 +338,15 @@ class ConverterApp(ttk.Frame):
             messagebox.showinfo(APP_TITLE, "Add at least one data file first.")
             return
         self._destroy_editor()
+        clashes = self._name_clashes()
+        if clashes:
+            messagebox.showerror(
+                APP_TITLE,
+                "Several columns would get the same export name:\n\n"
+                + "\n".join(clashes)
+                + "\n\nGive them distinct names in the Variables tab, then export again.",
+            )
+            return
         try:
             if self.combine_var.get() and len(self.files) > 1:
                 out = filedialog.asksaveasfilename(

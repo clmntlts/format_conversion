@@ -58,9 +58,12 @@ def inline(text):
     text = re.sub(r"`([^`]+)`", stash, text)
     text = html.escape(text, quote=False)
     text = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", text)
-    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)",
-                  lambda m: f'<link href="{m.group(2)}" color="#2d6cdf">{m.group(1)}</link>',
-                  text)
+    def link(m):
+        label, href = m.group(1), m.group(2)
+        if href.startswith("#"):  # in-page anchor: no target in the PDF
+            return label
+        return f'<link href="{href}" color="#2d6cdf">{label}</link>'
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", link, text)
     def restore(m):
         c = html.escape(codes[int(m.group(1))], quote=False)
         return (f'<font face="Courier" size="9" backColor="#f2f4f7" '
@@ -114,7 +117,9 @@ def parse(md):
             for r, raw in enumerate(block):
                 if r == 1:
                     continue  # separator
-                cells = [c.strip() for c in raw.strip().strip("|").split("|")]
+                # split on unescaped pipes; "\|" is a literal pipe in a cell
+                cells = [c.strip().replace("\\|", "|")
+                         for c in re.split(r"(?<!\\)\|", raw.strip().strip("|"))]
                 rows.append(cells)
             story.append(make_table(rows))
             story.append(Spacer(1, 6))
@@ -139,11 +144,22 @@ def parse(md):
             story.append(Paragraph(inline(" ".join(buf)), QUOTE)); continue
         # list (bulleted or numbered)
         if re.match(r"^\s*([-*]|\d+\.)\s+", line):
-            items = []
-            while i < len(lines) and re.match(r"^\s*([-*]|\d+\.)\s+", lines[i]):
-                txt = re.sub(r"^\s*([-*]|\d+\.)\s+", "", lines[i])
-                items.append(ListItem(Paragraph(inline(txt), BODY), leftIndent=14))
+            entries = []  # [nested?, bullet, text]
+            while i < len(lines):
+                m = re.match(r"^(\s*)([-*]|\d+\.)\s+(.*)", lines[i])
+                if m:
+                    nested = len(m.group(1)) > 0
+                    bullet = m.group(2) if m.group(2)[0].isdigit() else ("–" if nested else "•")
+                    entries.append([nested, bullet, m.group(3)])
+                elif (entries and lines[i].startswith(" ") and lines[i].strip()
+                      and not lines[i].strip().startswith("```")):
+                    entries[-1][2] += " " + lines[i].strip()  # wrapped line
+                else:
+                    break
                 i += 1
+            items = [ListItem(Paragraph(inline(t), BODY),
+                              leftIndent=32 if nested else 16, value=bullet)
+                     for nested, bullet, t in entries]
             story.append(ListFlowable(items, bulletType="bullet",
                                       start="•", leftIndent=12, spaceAfter=6))
             continue

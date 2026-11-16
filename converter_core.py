@@ -9,6 +9,8 @@ This module is GUI-free so it can be unit-tested and reused.
 
 import os
 import re
+
+import openpyxl  # noqa: F401  (pandas loads it lazily; explicit so PyInstaller bundles it)
 import pandas as pd
 
 # Columns we expect in a long-format export. A sheet is considered the data
@@ -28,6 +30,34 @@ META_COLS = ["form_id", "form_title"]
 _NON_MATRIX_MARKERS = {"row_0", "nan", "none", ""}
 
 
+def _is_blank(v):
+    """True for None / NaN / pd.NA cells."""
+    try:
+        return bool(pd.isna(v))
+    except (TypeError, ValueError):
+        return False
+
+
+def _matrix_key(matrix_row):
+    """Normalised matrix item: None for simple questions, else the label.
+
+    'row_0', blank and NaN all mean "no sub-item", so they must map to the
+    same variable even when different files encode them differently.
+    """
+    if _is_blank(matrix_row):
+        return None
+    s = str(matrix_row)
+    return None if s.strip().lower() in _NON_MATRIX_MARKERS else s
+
+
+def _fmt_answer(v):
+    """Cell value -> text, without the '3.0' artefact pandas adds to integer
+    answers in columns that also contain blanks (read as float64)."""
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v).strip()
+
+
 def matrix_suffix(text):
     """Extract a short item label from a matrix row like 'a.\\tde penser...'.
 
@@ -40,11 +70,10 @@ def matrix_suffix(text):
 def _base_variable(code, matrix_row):
     """Best-effort variable name for a single (code, matrix_row) pair."""
     code = str(code)
-    if matrix_row is None or (isinstance(matrix_row, float) and pd.isna(matrix_row)):
+    mr = _matrix_key(matrix_row)
+    if mr is None:
         return code
-    mr = str(matrix_row).strip()
-    if mr.lower() in _NON_MATRIX_MARKERS:
-        return code
+    mr = mr.strip()
     suf = matrix_suffix(mr)
     if suf:
         return f"{code}_{suf}"
@@ -66,8 +95,7 @@ def assign_variables(df):
     variables = []
     order = []
     for code, mr in zip(df["question_code"], df["matrix_row"]):
-        mr_key = None if (mr is None or (isinstance(mr, float) and pd.isna(mr))) else str(mr)
-        key = (str(code), mr_key)
+        key = (str(code), _matrix_key(mr))
         if key in key_to_var:
             variables.append(key_to_var[key])
             continue
@@ -91,8 +119,8 @@ def _combine_answers(row):
     for c in ANSWER_COLS:
         if c in row.index:
             v = row[c]
-            if v is not None and not (isinstance(v, float) and pd.isna(v)):
-                s = str(v).strip()
+            if not _is_blank(v):
+                s = _fmt_answer(v)
                 if s != "" and s.lower() != "nan":
                     parts.append(s)
     return " | ".join(parts)
@@ -112,9 +140,7 @@ def build_codebook(df, order=None):
             {
                 "variable": var,
                 "question_code": r.get("question_code", ""),
-                "matrix_row": ""
-                if (pd.isna(r.get("matrix_row")) or str(r.get("matrix_row")) == "row_0")
-                else r.get("matrix_row"),
+                "matrix_row": _matrix_key(r.get("matrix_row")) or "",
                 "question_type": r.get("question_type", ""),
                 "page_number": r.get("page_number", ""),
                 "question_text": r.get("question_text", ""),
@@ -155,16 +181,17 @@ def to_wide(df):
 def find_data_sheet(path):
     """Return (sheet_name, DataFrame) of the first sheet that looks like a
     long-format data sheet. Raises ValueError if none match."""
-    xl = pd.ExcelFile(path)
-    for sheet in xl.sheet_names:
-        try:
-            df = xl.parse(sheet)
-        except Exception:
-            continue
-        if df.empty:
-            continue
-        if REQUIRED_COLS.issubset(set(df.columns)):
-            return sheet, df
+    # Context manager: otherwise the workbook stays locked on Windows.
+    with pd.ExcelFile(path) as xl:
+        for sheet in xl.sheet_names:
+            try:
+                df = xl.parse(sheet)
+            except Exception:
+                continue
+            if df.empty:
+                continue
+            if REQUIRED_COLS.issubset(set(df.columns)):
+                return sheet, df
     raise ValueError(
         f"No long-format data sheet found in '{os.path.basename(path)}'. "
         f"Expected columns include: {', '.join(sorted(REQUIRED_COLS))}."

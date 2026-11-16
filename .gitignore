@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv*/
+venv/
+
+# PyInstaller build output (the .exe is published as a GitHub Release asset)
+build/
+dist/
+*.spec
+
+# Excel lock files and local data
+~$*
+*_wide.xlsx
+
+# Build log
+build.log
